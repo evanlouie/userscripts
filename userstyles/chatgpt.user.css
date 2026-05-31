@@ -1,7 +1,18 @@
+/* ==UserCSS==
+@name        ChatGPT
+@namespace   https://github.com/evanlouie/userscripts
+@version     0.1.1
+@description Custom ChatGPT reading and typography styles
+@author      Evan Louie
+@homepageURL https://github.com/evanlouie/userscripts
+@supportURL  https://github.com/evanlouie/userscripts/issues
+@updateURL   https://raw.githubusercontent.com/evanlouie/userscripts/master/userstyles/chatgpt.user.css
+==/UserCSS== */
+
 /* ==UserStyle==
 @name        ChatGPT
 @namespace   https://github.com/evanlouie/userscripts
-@version     0.1.0
+@version     0.1.1
 @description Custom ChatGPT reading and typography styles
 @author      Evan Louie
 @homepageURL https://github.com/evanlouie/userscripts
@@ -10,6 +21,7 @@
 @match       https://chatgpt.com/*
 @match       https://chatgpt.com
 ==/UserStyle== */
+
 :root {
   /* Custom */
   --stylus-text-primary: rgb(235, 235, 235);
