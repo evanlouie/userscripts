@@ -1,0 +1,19 @@
+{
+  "name": "userscripts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Personal userscripts and user styles.",
+  "scripts": {
+    "check": "npm run typecheck && npm run lint && npm run format:check",
+    "format": "oxfmt . --write",
+    "format:check": "oxfmt . --check",
+    "lint": "oxlint . --jsdoc-plugin",
+    "lint:fix": "oxlint . --jsdoc-plugin --fix",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.52.0",
+    "oxlint": "^1.67.0",
+    "typescript": "^5.9.3"
+  }
+}
