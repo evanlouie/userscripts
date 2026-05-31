@@ -1,12 +1,16 @@
 // ==UserScript==
 // @name         ChatGPT Thinking Effort Hotkeys
 // @namespace    https://github.com/evanlouie/userscripts
-// @version      0.1.1
+// @version      0.1.2
 // @description  Cycle ChatGPT thinking effort from the model submenu.
 // @author       Evan Louie
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
 // @grant        none
+// @homepageURL  https://github.com/evanlouie/userscripts
+// @supportURL   https://github.com/evanlouie/userscripts/issues
+// @updateURL    https://raw.githubusercontent.com/evanlouie/userscripts/master/userscripts/chatgpt-thinking-effort-hotkeys.user.js
+// @downloadURL  https://raw.githubusercontent.com/evanlouie/userscripts/master/userscripts/chatgpt-thinking-effort-hotkeys.user.js
 // ==/UserScript==
 
 // @ts-check
