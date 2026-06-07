@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ChatGPT Thinking Effort Hotkeys
 // @namespace    https://github.com/evanlouie/userscripts
-// @version      0.1.2
-// @description  Cycle ChatGPT thinking effort from the model submenu.
+// @version      0.2.0
+// @description  Cycle ChatGPT Instant, Thinking, and Pro modes plus reasoning efforts.
 // @author       Evan Louie
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -19,8 +19,14 @@
   "use strict";
 
   /**
+   * @typedef {"Instant" | "Thinking" | "Pro"} ModeLabel
+   * @typedef {"Thinking" | "Pro"} ReasoningModeLabel
    * @typedef {{ code: string, key: string, direction: 1 | -1 }} Hotkey
+   * @typedef {{ element: HTMLElement, mode: ModeLabel, effortLabel: string, checked: boolean }} ModeItem
    * @typedef {{ element: HTMLElement, label: string, checked: boolean }} EffortOption
+   * @typedef {{ kind: "instant", mode: "Instant", item: ModeItem }} InstantCycleOption
+   * @typedef {{ kind: "effort", mode: ReasoningModeLabel, item: ModeItem, effort: EffortOption }} EffortCycleOption
+   * @typedef {InstantCycleOption | EffortCycleOption} CycleOption
    * @typedef {{ clientX: number, clientY: number }} PointerPoint
    * @typedef {HTMLElement & { __thinkingEffortHotkeysTimer?: number }} ToastElement
    */
@@ -31,8 +37,8 @@
     { code: "BracketLeft", key: "[", direction: -1 },
   ];
 
+  const MODE_LABELS = /** @type {ModeLabel[]} */ (["Instant", "Thinking", "Pro"]);
   const KNOWN_EFFORTS = ["Light", "Standard", "Extended", "Heavy"];
-  const COMPOSER_TRIGGER_LABELS = ["Thinking", ...KNOWN_EFFORTS];
   const MENU_WAIT_MS = 1200;
   const SUBMENU_WAIT_MS = 900;
   const TOAST_MS = 1600;
@@ -54,10 +60,10 @@
     if (cycling) return;
     cycling = true;
 
-    cycleThinkingEffort(hotkey.direction)
+    cycleModelMode(hotkey.direction)
       .catch((error) => {
         closeMenus();
-        toast(error && error.message ? error.message : "Thinking effort hotkey failed");
+        toast(error && error.message ? error.message : "ChatGPT mode hotkey failed");
       })
       .finally(() => {
         cycling = false;
@@ -75,44 +81,46 @@
   }
 
   /** @param {1 | -1} direction */
-  async function cycleThinkingEffort(direction) {
+  async function cycleModelMode(direction) {
     const activeElement =
       document.activeElement instanceof HTMLElement || document.activeElement instanceof SVGElement
         ? document.activeElement
         : null;
     const focusTarget = getPromptFocusTarget() || activeElement;
-    const trigger = findComposerEffortButton();
+    const trigger = findComposerModeButton();
     if (!trigger) {
-      throw new Error("Thinking effort button not found");
+      throw new Error("ChatGPT mode button not found");
     }
 
-    let thinkingItem = findThinkingMenuItem();
-    if (!thinkingItem) {
+    let modeItems = findModeMenuItems();
+    if (!modeItems.length) {
       clickElement(trigger);
-      thinkingItem = await waitFor(findThinkingMenuItem, MENU_WAIT_MS);
+      modeItems = await waitFor(
+        () => {
+          const items = findModeMenuItems();
+          return items.length ? items : null;
+        },
+        MENU_WAIT_MS,
+        "ChatGPT mode menu not found",
+      );
     }
 
-    let options = getEffortOptions(thinkingItem);
-    if (!options) {
-      openEffortSubmenu(thinkingItem);
-      options = await waitFor(() => getEffortOptions(thinkingItem), SUBMENU_WAIT_MS);
-    }
-
+    const options = await getCycleOptions(modeItems);
     if (options.length < 2) {
-      throw new Error("Thinking effort submenu not found");
+      throw new Error("ChatGPT mode options not found");
     }
 
-    const currentIndex = getCurrentOptionIndex(options, thinkingItem, trigger);
+    const currentIndex = getCurrentCycleOptionIndex(options, modeItems, trigger);
     const targetIndex = wrapIndex(currentIndex + direction, options.length);
     const target = options[targetIndex];
 
-    clickElement(target.element);
+    await selectCycleOption(target);
     restoreFocus(focusTarget);
-    toast(`Thinking effort: ${target.label}`);
+    toast(`ChatGPT mode: ${formatCycleOption(target)}`);
   }
 
   /** @returns {HTMLElement | null} */
-  function findComposerEffortButton() {
+  function findComposerModeButton() {
     const composerRoot = findComposerRoot();
     const roots = composerRoot ? [composerRoot, document] : [document];
 
@@ -123,17 +131,12 @@
         ),
       );
 
-      const exactMatch = buttons.find((button) =>
-        COMPOSER_TRIGGER_LABELS.includes(normalizeText(button)),
-      );
+      const exactMatch = buttons.find((button) => isComposerModeTriggerText(normalizeText(button)));
       if (exactMatch) return exactMatch;
 
       const menuButton = buttons.find((button) => {
         const text = normalizeText(button);
-        return (
-          /\b(Thinking|Light|Standard|Extended|Heavy)\b/.test(text) &&
-          !/Configure|Instant|Pro/.test(text)
-        );
+        return isComposerModeTriggerText(text);
       });
       if (menuButton) return menuButton;
     }
@@ -149,7 +152,7 @@
     let node = prompt.parentElement;
     while (node && node !== document.body) {
       const buttons = visibleElements(node.querySelectorAll("button"));
-      if (buttons.some((button) => COMPOSER_TRIGGER_LABELS.includes(normalizeText(button)))) {
+      if (buttons.some((button) => isComposerModeTriggerText(normalizeText(button)))) {
         return node;
       }
       node = node.parentElement;
@@ -168,44 +171,76 @@
     return target instanceof HTMLElement ? target : null;
   }
 
-  /** @returns {HTMLElement | undefined} */
-  function findThinkingMenuItem() {
+  /** @returns {ModeItem[]} */
+  function findModeMenuItems() {
     const candidates = visibleElements(
       document.querySelectorAll(
-        '[role="menuitemradio"], [role="menuitem"], [role="option"], [role="radio"], [aria-checked]',
+        '[role="menuitemradio"], [role="option"], [role="radio"], [aria-checked]',
       ),
     );
 
-    return candidates.find((element) => {
+    const items = [];
+    const seenModes = new Set();
+
+    for (const element of candidates) {
       const text = normalizeText(element);
-      if (!/^Thinking\b/.test(text)) return false;
+      const mode = modeLabelFromText(text);
+      if (!mode || seenModes.has(mode)) continue;
 
       const menu = element.closest('[role="menu"]');
-      const menuText = menu ? normalizeText(menu) : "";
-      return /\bInstant\b/.test(menuText) && /\bPro\b/.test(menuText);
+      if (!(menu instanceof HTMLElement) || !isModelMenu(menu)) continue;
+
+      seenModes.add(mode);
+      items.push({
+        element,
+        mode,
+        effortLabel: effortLabelFromText(text),
+        checked: isChecked(element),
+      });
+    }
+
+    return items.sort((a, b) => {
+      const aRect = a.element.getBoundingClientRect();
+      const bRect = b.element.getBoundingClientRect();
+      return aRect.top - bRect.top || aRect.left - bRect.left;
     });
   }
 
-  /** @param {HTMLElement} thinkingItem */
-  function openEffortSubmenu(thinkingItem) {
-    const action = findThinkingEffortAction(thinkingItem);
+  /** @param {ModeItem} modeItem */
+  async function getOrOpenEffortOptions(modeItem) {
+    let options = getEffortOptions(modeItem);
+    if (!options) {
+      openEffortSubmenu(modeItem);
+      options = await waitFor(
+        () => getEffortOptions(modeItem),
+        SUBMENU_WAIT_MS,
+        `${modeItem.mode} effort submenu not found`,
+      );
+    }
+
+    return options;
+  }
+
+  /** @param {ModeItem} modeItem */
+  function openEffortSubmenu(modeItem) {
+    const action = findEffortAction(modeItem.element);
     if (action) {
       clickElement(action);
       return;
     }
 
-    revealSubmenu(thinkingItem);
+    revealSubmenu(modeItem.element);
   }
 
   /**
-   * @param {HTMLElement} thinkingItem
+   * @param {HTMLElement} modeElement
    * @returns {HTMLElement | null}
    */
-  function findThinkingEffortAction(thinkingItem) {
+  function findEffortAction(modeElement) {
     const row =
-      thinkingItem.closest("[data-model-picker-thinking-effort-row]") ||
-      thinkingItem.parentElement ||
-      thinkingItem;
+      modeElement.closest("[data-model-picker-thinking-effort-row]") ||
+      modeElement.parentElement ||
+      modeElement;
 
     return (
       toHTMLElement(
@@ -239,11 +274,11 @@
   }
 
   /**
-   * @param {HTMLElement} thinkingItem
+   * @param {ModeItem} modeItem
    * @returns {EffortOption[] | null}
    */
-  function getEffortOptions(thinkingItem) {
-    const submenu = findEffortSubmenu(thinkingItem);
+  function getEffortOptions(modeItem) {
+    const submenu = findEffortSubmenu(modeItem.element, findEffortAction(modeItem.element));
     if (!submenu) return null;
 
     const rawItems = visibleElements(
@@ -263,9 +298,7 @@
       options.push({
         element,
         label,
-        checked:
-          element.getAttribute("aria-checked") === "true" ||
-          element.getAttribute("aria-selected") === "true",
+        checked: isChecked(element),
       });
     }
 
@@ -273,22 +306,41 @@
   }
 
   /**
-   * @param {HTMLElement} thinkingItem
+   * @param {HTMLElement} modeElement
+   * @param {HTMLElement | null} action
    * @returns {HTMLElement | null}
    */
-  function findEffortSubmenu(thinkingItem) {
-    const thinkingRect = thinkingItem.getBoundingClientRect();
+  function findEffortSubmenu(modeElement, action) {
     const menus = visibleElements(document.querySelectorAll('[role="menu"]'));
 
+    if (action) {
+      const controls = action.getAttribute("aria-controls");
+      const controlled = controls ? toHTMLElement(document.getElementById(controls)) : null;
+      if (controlled && isVisible(controlled) && controlled.getAttribute("role") === "menu") {
+        return controlled;
+      }
+
+      const actionId = action.id;
+      const labelledMenu = actionId
+        ? menus.find((menu) => menu.getAttribute("aria-labelledby") === actionId)
+        : null;
+      if (labelledMenu) return labelledMenu;
+    }
+
+    const modeRect = modeElement.getBoundingClientRect();
     const candidates = menus
-      .filter((menu) => !menu.contains(thinkingItem))
+      .filter((menu) => !menu.contains(modeElement))
       .map((menu) => ({ menu, rect: menu.getBoundingClientRect(), text: normalizeText(menu) }))
       .filter(({ rect, text }) => {
         const hasLevels =
-          KNOWN_EFFORTS.filter((label) => new RegExp(`\\b${label}\\b`).test(text)).length >= 2;
+          KNOWN_EFFORTS.filter((label) => new RegExp(`\\b${label}\\b`).test(text)).length >= 1;
         const looksLikeSubmenu =
-          rect.left >= thinkingRect.right - 16 && rect.top < thinkingRect.bottom + 20;
-        return hasLevels && looksLikeSubmenu && !/\bInstant\b|\bConfigure\b|\bPro\b/.test(text);
+          rect.left >= modeRect.right - 16 && rect.top < modeRect.bottom + 20;
+        return (
+          hasLevels &&
+          looksLikeSubmenu &&
+          !/\bInstant\b|\bThinking\b|\bPro\b|\bConfigure\b/.test(text)
+        );
       })
       .sort((a, b) => a.rect.left - b.rect.left || a.rect.top - b.rect.top);
 
@@ -296,18 +348,161 @@
   }
 
   /**
-   * @param {EffortOption[]} options
-   * @param {HTMLElement} thinkingItem
+   * @param {ModeItem[]} modeItems
+   * @returns {Promise<CycleOption[]>}
+   */
+  async function getCycleOptions(modeItems) {
+    /** @type {CycleOption[]} */
+    const options = [];
+
+    for (const item of modeItems) {
+      if (item.mode === "Instant") {
+        options.push({ kind: "instant", mode: "Instant", item });
+        continue;
+      }
+
+      const efforts = await getOrOpenEffortOptions(item);
+      for (const effort of efforts) {
+        options.push({
+          kind: "effort",
+          mode: /** @type {ReasoningModeLabel} */ (item.mode),
+          item,
+          effort,
+        });
+      }
+    }
+
+    return options;
+  }
+
+  /**
+   * @param {CycleOption[]} options
+   * @param {ModeItem[]} modeItems
    * @param {HTMLElement} trigger
    */
-  function getCurrentOptionIndex(options, thinkingItem, trigger) {
-    const checkedIndex = options.findIndex((option) => option.checked);
+  function getCurrentCycleOptionIndex(options, modeItems, trigger) {
+    const checkedIndex = options.findIndex((option) => {
+      if (option.kind === "instant") return option.item.checked;
+      return option.item.checked && option.effort.checked;
+    });
     if (checkedIndex >= 0) return checkedIndex;
 
-    const fallbackText = `${normalizeText(thinkingItem)} ${normalizeText(trigger)}`;
-    const fallbackLabel = effortLabelFromText(fallbackText);
-    const fallbackIndex = options.findIndex((option) => option.label === fallbackLabel);
-    return fallbackIndex >= 0 ? fallbackIndex : 0;
+    const checkedMode = modeItems.find((item) => item.checked);
+    if (checkedMode) {
+      const checkedModeIndex = findCycleOptionIndexForMode(
+        options,
+        checkedMode.mode,
+        checkedMode.effortLabel || effortLabelFromText(normalizeText(trigger)),
+      );
+      if (checkedModeIndex >= 0) return checkedModeIndex;
+    }
+
+    const triggerText = normalizeText(trigger);
+    const triggerMode = modeLabelFromText(triggerText);
+    if (triggerMode) {
+      const triggerModeIndex = findCycleOptionIndexForMode(
+        options,
+        triggerMode,
+        effortLabelFromText(triggerText),
+      );
+      if (triggerModeIndex >= 0) return triggerModeIndex;
+    }
+
+    const triggerEffort = effortLabelFromText(triggerText);
+    if (triggerEffort) {
+      const effortIndex = options.findIndex(
+        (option) => option.kind === "effort" && option.effort.label === triggerEffort,
+      );
+      if (effortIndex >= 0) return effortIndex;
+    }
+
+    return 0;
+  }
+
+  /**
+   * @param {CycleOption[]} options
+   * @param {ModeLabel} mode
+   * @param {string} effortLabel
+   */
+  function findCycleOptionIndexForMode(options, mode, effortLabel) {
+    if (mode === "Instant") {
+      return options.findIndex((option) => option.kind === "instant");
+    }
+
+    const effortIndex = options.findIndex(
+      (option) =>
+        option.kind === "effort" && option.mode === mode && option.effort.label === effortLabel,
+    );
+    if (effortIndex >= 0) return effortIndex;
+
+    return options.findIndex((option) => option.kind === "effort" && option.mode === mode);
+  }
+
+  /** @param {CycleOption} option */
+  async function selectCycleOption(option) {
+    if (option.kind === "instant") {
+      clickElement(option.item.element);
+      return;
+    }
+
+    let target = option.effort.element;
+    if (!document.contains(target) || !isVisible(target)) {
+      const refreshedOptions = await getOrOpenEffortOptions(option.item);
+      const refreshedTarget = refreshedOptions.find(
+        (effort) => effort.label === option.effort.label,
+      );
+      if (!refreshedTarget) {
+        throw new Error(`${formatCycleOption(option)} not found`);
+      }
+      target = refreshedTarget.element;
+    }
+
+    clickElement(target);
+  }
+
+  /** @param {CycleOption} option */
+  function formatCycleOption(option) {
+    return option.kind === "instant" ? "Instant" : `${option.mode} • ${option.effort.label}`;
+  }
+
+  /** @param {HTMLElement} menu */
+  function isModelMenu(menu) {
+    const text = normalizeText(menu);
+    return MODE_LABELS.every((label) => new RegExp(`\\b${label}\\b`).test(text));
+  }
+
+  /** @param {string} text */
+  function isComposerModeTriggerText(text) {
+    if (!text || /Configure|profile menu|Download apps/i.test(text)) return false;
+
+    const modePattern = MODE_LABELS.join("|");
+    const effortPattern = KNOWN_EFFORTS.join("|");
+    return new RegExp(
+      `^(?:${modePattern})(?:\\s*(?:•|-|:)\\s*(?:${effortPattern}))?$|^(?:${effortPattern})$`,
+    ).test(text);
+  }
+
+  /**
+   * @param {string} text
+   * @returns {ModeLabel | null}
+   */
+  function modeLabelFromText(text) {
+    for (const label of MODE_LABELS) {
+      if (new RegExp(`^${label}(?:\\b|$)`).test(text)) {
+        return label;
+      }
+    }
+
+    return null;
+  }
+
+  /** @param {Element} element */
+  function isChecked(element) {
+    return (
+      element.getAttribute("aria-checked") === "true" ||
+      element.getAttribute("aria-selected") === "true" ||
+      element.getAttribute("data-state") === "checked"
+    );
   }
 
   /** @param {string} text */
@@ -426,9 +621,10 @@
    * @template T
    * @param {() => T | null | undefined | false} getValue
    * @param {number} timeoutMs
+   * @param {string} [message]
    * @returns {Promise<T>}
    */
-  function waitFor(getValue, timeoutMs) {
+  function waitFor(getValue, timeoutMs, message = "Expected ChatGPT menu not found") {
     const startedAt = performance.now();
 
     return new Promise((resolve, reject) => {
@@ -440,7 +636,7 @@
         }
 
         if (performance.now() - startedAt >= timeoutMs) {
-          reject(new Error("Thinking effort submenu not found"));
+          reject(new Error(message));
           return;
         }
 
