@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ChatGPT Thinking Effort Hotkeys
 // @namespace    https://github.com/evanlouie/userscripts
-// @version      0.2.0
-// @description  Cycle ChatGPT Instant, Thinking, and Pro modes plus reasoning efforts.
+// @version      0.2.1
+// @description  Cycle ChatGPT Instant and Thinking reasoning efforts.
 // @author       Evan Louie
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -19,10 +19,11 @@
   "use strict";
 
   /**
-   * @typedef {"Instant" | "Thinking" | "Pro"} ModeLabel
-   * @typedef {"Thinking" | "Pro"} ReasoningModeLabel
+   * @typedef {"Instant" | "Thinking" | "Pro"} MenuModeLabel
+   * @typedef {"Instant" | "Thinking"} CycleModeLabel
+   * @typedef {"Thinking"} ReasoningModeLabel
    * @typedef {{ code: string, key: string, direction: 1 | -1 }} Hotkey
-   * @typedef {{ element: HTMLElement, mode: ModeLabel, effortLabel: string, checked: boolean }} ModeItem
+   * @typedef {{ element: HTMLElement, mode: MenuModeLabel, effortLabel: string, checked: boolean }} ModeItem
    * @typedef {{ element: HTMLElement, label: string, checked: boolean }} EffortOption
    * @typedef {{ kind: "instant", mode: "Instant", item: ModeItem }} InstantCycleOption
    * @typedef {{ kind: "effort", mode: ReasoningModeLabel, item: ModeItem, effort: EffortOption }} EffortCycleOption
@@ -37,7 +38,8 @@
     { code: "BracketLeft", key: "[", direction: -1 },
   ];
 
-  const MODE_LABELS = /** @type {ModeLabel[]} */ (["Instant", "Thinking", "Pro"]);
+  const MENU_MODE_LABELS = /** @type {MenuModeLabel[]} */ (["Instant", "Thinking", "Pro"]);
+  const CYCLE_MODE_LABELS = /** @type {CycleModeLabel[]} */ (["Instant", "Thinking"]);
   const KNOWN_EFFORTS = ["Light", "Standard", "Extended", "Heavy"];
   const MENU_WAIT_MS = 1200;
   const SUBMENU_WAIT_MS = 900;
@@ -184,7 +186,7 @@
 
     for (const element of candidates) {
       const text = normalizeText(element);
-      const mode = modeLabelFromText(text);
+      const mode = menuModeLabelFromText(text);
       if (!mode || seenModes.has(mode)) continue;
 
       const menu = element.closest('[role="menu"]');
@@ -360,6 +362,7 @@
         options.push({ kind: "instant", mode: "Instant", item });
         continue;
       }
+      if (item.mode !== "Thinking") continue;
 
       const efforts = await getOrOpenEffortOptions(item);
       for (const effort of efforts) {
@@ -388,7 +391,7 @@
     if (checkedIndex >= 0) return checkedIndex;
 
     const checkedMode = modeItems.find((item) => item.checked);
-    if (checkedMode) {
+    if (checkedMode && isCycleMode(checkedMode.mode)) {
       const checkedModeIndex = findCycleOptionIndexForMode(
         options,
         checkedMode.mode,
@@ -398,8 +401,8 @@
     }
 
     const triggerText = normalizeText(trigger);
-    const triggerMode = modeLabelFromText(triggerText);
-    if (triggerMode) {
+    const triggerMode = menuModeLabelFromText(triggerText);
+    if (triggerMode && isCycleMode(triggerMode)) {
       const triggerModeIndex = findCycleOptionIndexForMode(
         options,
         triggerMode,
@@ -408,7 +411,8 @@
       if (triggerModeIndex >= 0) return triggerModeIndex;
     }
 
-    const triggerEffort = effortLabelFromText(triggerText);
+    const triggerEffort =
+      !triggerMode || triggerMode === "Thinking" ? effortLabelFromText(triggerText) : "";
     if (triggerEffort) {
       const effortIndex = options.findIndex(
         (option) => option.kind === "effort" && option.effort.label === triggerEffort,
@@ -421,7 +425,7 @@
 
   /**
    * @param {CycleOption[]} options
-   * @param {ModeLabel} mode
+   * @param {CycleModeLabel} mode
    * @param {string} effortLabel
    */
   function findCycleOptionIndexForMode(options, mode, effortLabel) {
@@ -468,14 +472,14 @@
   /** @param {HTMLElement} menu */
   function isModelMenu(menu) {
     const text = normalizeText(menu);
-    return MODE_LABELS.every((label) => new RegExp(`\\b${label}\\b`).test(text));
+    return CYCLE_MODE_LABELS.every((label) => new RegExp(`\\b${label}\\b`).test(text));
   }
 
   /** @param {string} text */
   function isComposerModeTriggerText(text) {
     if (!text || /Configure|profile menu|Download apps/i.test(text)) return false;
 
-    const modePattern = MODE_LABELS.join("|");
+    const modePattern = MENU_MODE_LABELS.join("|");
     const effortPattern = KNOWN_EFFORTS.join("|");
     return new RegExp(
       `^(?:${modePattern})(?:\\s*(?:•|-|:)\\s*(?:${effortPattern}))?$|^(?:${effortPattern})$`,
@@ -484,16 +488,24 @@
 
   /**
    * @param {string} text
-   * @returns {ModeLabel | null}
+   * @returns {MenuModeLabel | null}
    */
-  function modeLabelFromText(text) {
-    for (const label of MODE_LABELS) {
+  function menuModeLabelFromText(text) {
+    for (const label of MENU_MODE_LABELS) {
       if (new RegExp(`^${label}(?:\\b|$)`).test(text)) {
         return label;
       }
     }
 
     return null;
+  }
+
+  /**
+   * @param {MenuModeLabel} mode
+   * @returns {mode is CycleModeLabel}
+   */
+  function isCycleMode(mode) {
+    return mode === "Instant" || mode === "Thinking";
   }
 
   /** @param {Element} element */
