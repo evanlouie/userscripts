@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ChatGPT Thinking Effort Hotkeys
 // @namespace    https://github.com/evanlouie/userscripts
-// @version      0.2.1
-// @description  Cycle ChatGPT Instant and Thinking reasoning efforts.
+// @version      0.3.0
+// @description  Cycle ChatGPT Instant and Thinking/Intelligence reasoning efforts.
 // @author       Evan Louie
 // @match        https://chatgpt.com/*
 // @run-at       document-idle
@@ -40,7 +40,7 @@
 
   const MENU_MODE_LABELS = /** @type {MenuModeLabel[]} */ (["Instant", "Thinking", "Pro"]);
   const CYCLE_MODE_LABELS = /** @type {CycleModeLabel[]} */ (["Instant", "Thinking"]);
-  const KNOWN_EFFORTS = ["Light", "Standard", "Extended", "Heavy"];
+  const KNOWN_EFFORTS = ["Extra High", "Standard", "Extended", "Medium", "Light", "Heavy", "High"];
   const MENU_WAIT_MS = 1200;
   const SUBMENU_WAIT_MS = 900;
   const TOAST_MS = 1600;
@@ -186,17 +186,20 @@
 
     for (const element of candidates) {
       const text = normalizeText(element);
-      const mode = menuModeLabelFromText(text);
-      if (!mode || seenModes.has(mode)) continue;
-
       const menu = element.closest('[role="menu"]');
       if (!(menu instanceof HTMLElement) || !isModelMenu(menu)) continue;
 
-      seenModes.add(mode);
+      const directEffort = effortLabelFromText(text);
+      const mode = menuModeLabelFromText(text) || (directEffort ? "Thinking" : null);
+      if (!mode) continue;
+      const seenKey = directEffort ? `${mode}:${directEffort}` : mode;
+      if (seenModes.has(seenKey)) continue;
+
+      seenModes.add(seenKey);
       items.push({
         element,
         mode,
-        effortLabel: effortLabelFromText(text),
+        effortLabel: directEffort,
         checked: isChecked(element),
       });
     }
@@ -363,6 +366,19 @@
         continue;
       }
       if (item.mode !== "Thinking") continue;
+      if (item.effortLabel) {
+        options.push({
+          kind: "effort",
+          mode: /** @type {ReasoningModeLabel} */ (item.mode),
+          item,
+          effort: {
+            element: item.element,
+            label: item.effortLabel,
+            checked: item.checked,
+          },
+        });
+        continue;
+      }
 
       const efforts = await getOrOpenEffortOptions(item);
       for (const effort of efforts) {
@@ -451,7 +467,15 @@
 
     let target = option.effort.element;
     if (!document.contains(target) || !isVisible(target)) {
-      const refreshedOptions = await getOrOpenEffortOptions(option.item);
+      const refreshedOptions = option.item.effortLabel
+        ? findModeMenuItems()
+            .filter((item) => item.mode === option.mode && item.effortLabel)
+            .map((item) => ({
+              element: item.element,
+              label: item.effortLabel,
+              checked: item.checked,
+            }))
+        : await getOrOpenEffortOptions(option.item);
       const refreshedTarget = refreshedOptions.find(
         (effort) => effort.label === option.effort.label,
       );
@@ -466,13 +490,19 @@
 
   /** @param {CycleOption} option */
   function formatCycleOption(option) {
-    return option.kind === "instant" ? "Instant" : `${option.mode} • ${option.effort.label}`;
+    return option.kind === "instant" ? "Instant" : option.effort.label;
   }
 
   /** @param {HTMLElement} menu */
   function isModelMenu(menu) {
     const text = normalizeText(menu);
-    return CYCLE_MODE_LABELS.every((label) => new RegExp(`\\b${label}\\b`).test(text));
+    if (CYCLE_MODE_LABELS.every((label) => new RegExp(`\\b${label}\\b`).test(text))) return true;
+
+    const hasInstant = /\bInstant\b/.test(text);
+    const effortCount = KNOWN_EFFORTS.filter((label) =>
+      new RegExp(`\\b${label}\\b`).test(text),
+    ).length;
+    return hasInstant && effortCount >= 2;
   }
 
   /** @param {string} text */
@@ -519,6 +549,8 @@
 
   /** @param {string} text */
   function effortLabelFromText(text) {
+    if (/\bPro\b/.test(text)) return "";
+
     for (const label of KNOWN_EFFORTS) {
       if (new RegExp(`(?:^|\\b)${label}(?:\\b|$)`).test(text)) {
         return label;
